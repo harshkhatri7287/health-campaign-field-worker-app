@@ -34,7 +34,10 @@ class AppLocalizationsDelegate extends LocalizationsDelegate<AppLocalizations> {
   }
 
   @override
-  bool shouldReload(covariant LocalizationsDelegate<AppLocalizations> old) {
-    return true;
+  bool shouldReload(covariant AppLocalizationsDelegate old) {
+    // Only reload when the app config changes (e.g. new project/language list).
+    // Returning true unconditionally was triggering load() — and its
+    // _localizedStrings.clear() — on every MaterialApp rebuild.
+    return old._appConfig != _appConfig;
   }
 }

@@ -149,6 +149,10 @@ class LocalizationBloc extends Bloc<LocalizationEvent, LocalizationState> {
 
   FutureOr<void> _loadLocale(List codes) async {
     LocalizationParams().setLocale(Locale(codes.first, codes.last));
+    // Reset the code filter so a previous screen's narrow filter
+    // (e.g. boundary selection's setCode([...])) does not persist
+    // into the next load and cause partial translations.
+    LocalizationParams().setCode(null);
     await AppLocalizations(Locale(codes.first, codes.last), sql).load();
   }
 }

@@ -26,11 +26,16 @@ class AppLocalizations {
     final listOfLocalizations =
         await LocalizationLocalRepository().returnLocalizationFromSQL(sql);
 
-    _localizedStrings.clear();
+    // Only replace in-memory strings if we got data back.
+    // Avoids wiping valid translations when SQL returns empty due to a
+    // race condition, wrong locale/module filter, or a network failure.
+    if (listOfLocalizations.isNotEmpty) {
+      _localizedStrings
+        ..clear()
+        ..addAll(listOfLocalizations);
+    }
 
-    _localizedStrings.addAll(listOfLocalizations);
-
-    return _localizedStrings.isNotEmpty ? true : false;
+    return _localizedStrings.isNotEmpty;
   }
 
   String translate(String localizedValues) {

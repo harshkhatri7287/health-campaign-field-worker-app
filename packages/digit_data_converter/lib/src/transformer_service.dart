@@ -293,9 +293,16 @@ class FormEntityMapper {
             final formValue =
                 getStrictValueFromFormDataOnly(sourcePath, formData);
 
-            target[targetKey] = (formValue != null && formValue is DateTime)
-                ? formValue.millisecondsSinceEpoch
-                : formValue;
+            // A null form value means the field was never actually
+            // populated (e.g. it's hidden via a dynamic visibilityCondition
+            // and got reset on build) rather than explicitly cleared by the
+            // user — preserve the existing entity's value instead of
+            // overwriting it with null.
+            if (formValue != null) {
+              target[targetKey] = formValue is DateTime
+                  ? formValue.millisecondsSinceEpoch
+                  : formValue;
+            }
 
             // Track the path as used so it's not treated as unmapped
             usedPaths.add(sourcePath.split('.').last.split('[').first);
@@ -394,7 +401,14 @@ class FormEntityMapper {
 
       if (containsPathInFormData(path, formValues)) {
         final value = getStrictValueFromFormDataOnly(path, formValues);
-        updatedFields[customKey] = value;
+
+        // A null form value means the field was never actually populated
+        // (e.g. it's hidden via a dynamic visibilityCondition and got reset
+        // on build) rather than explicitly cleared — preserve the existing
+        // additionalField value instead of overwriting it with null.
+        if (value != null) {
+          updatedFields[customKey] = value;
+        }
 
         // Track the path as used so it's not treated as unmapped
         usedPaths.add(path.split('.').last.split('[').first);

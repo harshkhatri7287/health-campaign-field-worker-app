@@ -1495,14 +1495,38 @@ void initializeFunctionRegistry() {
         // Check whether the last *administered* dose satisfies the full cycle
         // delivery count — reuse normal logic on the last ADMINISTRATION_SUCCESS
         // task rather than the last task overall (which may be ADVERSE_EFFECT).
-        final lastAdministeredTask = deliveryTasks.lastWhere(
-          (t) {
-            final s = t['status']?.toString().toUpperCase().trim() ?? '';
-            return s == TaskStatus.administrationSuccess ||
-                s == TaskStatus.delivered;
-          },
-          orElse: () => <String, dynamic>{},
-        );
+        //
+        // Prefer a DIRECT-strategy task here: INDIRECT doses are bulk-created
+        // alongside the DIRECT one in the same administration event and can
+        // carry a higher doseIndex than the DIRECT delivery count below, which
+        // would otherwise be misread as "doses still remaining".
+        final administeredTasks = deliveryTasks.where((t) {
+          final s = t['status']?.toString().toUpperCase().trim() ?? '';
+          return s == TaskStatus.administrationSuccess ||
+              s == TaskStatus.delivered;
+        }).toList();
+
+        String? deliveryStrategyOf(Map<String, dynamic> t) {
+          final af = t['additionalFields'];
+          final fields = af is Map ? af['fields'] as List? : null;
+          final field = fields?.firstWhereOrNull(
+            (f) => f is Map && f['key'] == 'deliveryStrategy',
+          );
+          return field is Map
+              ? field['value']?.toString().toUpperCase()
+              : null;
+        }
+
+        final directAdministeredTasks = administeredTasks
+            .where((t) => deliveryStrategyOf(t) != 'INDIRECT')
+            .toList();
+
+        final lastAdministeredTask =
+            (directAdministeredTasks.isNotEmpty
+                    ? directAdministeredTasks
+                    : administeredTasks)
+                .lastOrNull ??
+                <String, dynamic>{};
 
         if (lastAdministeredTask.isEmpty) return true;
 
@@ -2367,6 +2391,32 @@ void initializeFunctionRegistry() {
           (e) => e.startDate < now && e.endDate > now,
         )
         ?.id;
+  });
+
+  /// Returns the INDIRECT-strategy deliveries of the currently running
+  /// cycle, read straight from the project type's cycle configuration.
+  ///
+  /// - **Function Name**: `'getFutureIndirectDeliveries'`
+  /// - **Returns**: `List<ProjectCycleDelivery>`, empty if no cycle is
+  ///   currently running.
+  ///
+  /// This exists for flows that administer a beneficiary's first-ever dose
+  /// (e.g. right after registering a new member) where there is no prior
+  /// task/dose history to derive a skip offset from, so every INDIRECT
+  /// delivery in the running cycle is still in the future. Screens that do
+  /// have that history (e.g. beneficiaryDetails) should keep using their
+  /// wrapperConfig `futureDeliveries` computed list instead, since it
+  /// correctly skips doses already administered.
+  FunctionRegistry.register("getFutureIndirectDeliveries", (args, stateData) {
+    final projectType = FlowBuilderSingleton().projectType;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final currentCycle = projectType?.cycles?.firstWhereOrNull(
+      (e) => e.startDate < now && e.endDate > now,
+    );
+    return currentCycle?.deliveries
+            ?.where((delivery) => delivery.deliveryStrategy == 'INDIRECT')
+            .toList() ??
+        const [];
   });
 
   /// Checks if the current member is the head of household.

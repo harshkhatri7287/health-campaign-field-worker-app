@@ -267,6 +267,86 @@ bool _isAgeEligibleFromDoseCriteria(
   return false;
 }
 
+Map<String, dynamic>? _asTaskMap(dynamic item) {
+  if (item is Map<String, dynamic>) return item;
+  if (item is Map) return Map<String, dynamic>.from(item);
+  try {
+    return Map<String, dynamic>.from((item as dynamic).toMap());
+  } catch (_) {
+    try {
+      return Map<String, dynamic>.from((item as dynamic).toJson());
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+int? _taskCycleIndex(Map<String, dynamic> task) {
+  final additionalFields = task['additionalFields'];
+  final fields =
+      additionalFields is Map ? additionalFields['fields'] as List? : null;
+  if (fields == null) return null;
+  for (final field in fields) {
+    if (field is Map && field['key'] == 'cycleIndex') {
+      return int.tryParse(field['value']?.toString() ?? '');
+    }
+  }
+  return null;
+}
+
+/// Finds the beneficiary's own most recent task that was successfully
+/// administered in a cycle strictly before [currentRunningCycle].
+///
+/// Used to decide whether a beneficiary who was already administered in a
+/// past cycle should keep receiving the same product variant (e.g. SPAQ1 vs
+/// SPAQ2) and remain eligible this cycle, regardless of their current age.
+Map<String, dynamic>? _lastPreviousCycleAdministeredTask(
+  dynamic rawTasks,
+  int? currentRunningCycle,
+) {
+  if (rawTasks is! List || rawTasks.isEmpty || currentRunningCycle == null) {
+    return null;
+  }
+
+  int? bestCycleIndex;
+  Map<String, dynamic>? bestTask;
+
+  for (final raw in rawTasks) {
+    final task = _asTaskMap(raw);
+    if (task == null) continue;
+
+    final status = task['status']?.toString().toUpperCase().trim() ?? '';
+    if (status != TaskStatus.administrationSuccess &&
+        status != TaskStatus.delivered) {
+      continue;
+    }
+
+    final cycleIndex = _taskCycleIndex(task);
+    if (cycleIndex == null || cycleIndex >= currentRunningCycle) continue;
+
+    final resolvedBest = bestCycleIndex;
+    if (resolvedBest == null || cycleIndex >= resolvedBest) {
+      bestCycleIndex = cycleIndex;
+      bestTask = task;
+    }
+  }
+
+  return bestTask;
+}
+
+/// Extracts the first `productVariantId` recorded against a task's
+/// delivered resources, if any.
+String? _deliveredProductVariantId(Map<String, dynamic> task) {
+  final resources = task['resources'];
+  if (resources is! List) return null;
+  for (final resource in resources) {
+    final resourceMap = _asTaskMap(resource);
+    final id = resourceMap?['productVariantId']?.toString();
+    if (id != null && id.isNotEmpty) return id;
+  }
+  return null;
+}
+
 // Helper function matching hasLogWithType logic
 bool _hasLogWithType(attendanceLog, DateTime date, String type) {
   final logTime = type == 'ENTRY'
@@ -450,6 +530,15 @@ void initializeFunctionRegistry() {
     }
 
     final tasks = args.length > 1 ? args[1] : [];
+    // Get currentRunningCycle from third argument if provided
+    final currentRunningCycle =
+        args.length > 2 ? int.tryParse(args[2]?.toString() ?? '') : null;
+    // A beneficiary already administered in a strictly earlier cycle stays
+    // eligible this cycle regardless of their current age, so they keep
+    // receiving the same product variant (see getContinuedProductVariants).
+    final hasPreviousCycleAdministration =
+        _lastPreviousCycleAdministeredTask(tasks, currentRunningCycle) !=
+            null;
     final dobValue = args.first;
     if (dobValue == null) {
       print(
@@ -482,7 +571,7 @@ void initializeFunctionRegistry() {
     final sideEffects = (stateData.modelMap['sideEffects'] as List?) ?? [];
 
 // --- Check age eligibility ---
-    final isWithinAge =
+    final isWithinAge = hasPreviousCycleAdministration ||
         _isAgeEligibleFromDoseCriteria(currentCycle, totalAgeMonths);
 
     if (!isWithinAge) return false;
@@ -491,10 +580,6 @@ void initializeFunctionRegistry() {
     bool recordedSideEffect = false;
 
     if (tasks.isNotEmpty) {
-      // Get currentRunningCycle from third argument if provided
-      final currentRunningCycle =
-          args.length > 2 ? int.tryParse(args[2]?.toString() ?? '') : null;
-
       for (final item in tasks) {
         Map<String, dynamic> task;
 
@@ -594,7 +679,8 @@ void initializeFunctionRegistry() {
           } catch (e) {
             print(
                 'DEBUG: checkEligibilityForAgeAndSideEffect - Failed to parse lastTask: $e');
-            return _isAgeEligibleFromDoseCriteria(currentCycle, totalAgeMonths);
+            return hasPreviousCycleAdministration ||
+                _isAgeEligibleFromDoseCriteria(currentCycle, totalAgeMonths);
           }
         }
       }
@@ -616,7 +702,8 @@ void initializeFunctionRegistry() {
           } catch (e) {
             print(
                 'DEBUG: checkEligibilityForAgeAndSideEffect - Failed to parse lastSideEffect: $e');
-            return _isAgeEligibleFromDoseCriteria(currentCycle, totalAgeMonths);
+            return hasPreviousCycleAdministration ||
+                _isAgeEligibleFromDoseCriteria(currentCycle, totalAgeMonths);
           }
         }
       }
@@ -629,7 +716,7 @@ void initializeFunctionRegistry() {
       recordedSideEffect = lastTaskTime != null &&
           (DateTime.now().millisecondsSinceEpoch - lastTaskTime) <= 172800000;
 
-      final isWithinAge =
+      final isWithinAge = hasPreviousCycleAdministration ||
           _isAgeEligibleFromDoseCriteria(currentCycle, totalAgeMonths);
 
       print(
@@ -644,11 +731,90 @@ void initializeFunctionRegistry() {
 
       return recordedSideEffect && !statusOk ? false : true;
     } else {
-      final res = _isAgeEligibleFromDoseCriteria(currentCycle, totalAgeMonths);
+      final res = hasPreviousCycleAdministration ||
+          _isAgeEligibleFromDoseCriteria(currentCycle, totalAgeMonths);
       print(
           'DEBUG: checkEligibilityForAgeAndSideEffect - No side effects or tasks, returning _isAgeEligibleFromDoseCriteria: $res');
       return res;
     }
+  });
+
+  /// Registers a function that decides which product variant(s) (e.g.
+  /// SPAQ1/SPAQ2) a beneficiary is eligible for this delivery.
+  ///
+  /// - **Function Name**: `'getContinuedProductVariants'`
+  /// - **Arguments**: `[doseCriteria, tasks, currentRunningCycle, ageBasedProductVariants]`
+  /// - **Returns**: A `List` of dose-criteria entries (each carrying a
+  ///   `ProductVariants` list), matching the shape already produced by the
+  ///   age-based `evaluateCondition` computation.
+  ///
+  /// If the beneficiary was already successfully administered in a cycle
+  /// strictly before [currentRunningCycle], they keep receiving the same
+  /// product variant they got back then, regardless of which age band they
+  /// currently fall into. Otherwise (never administered before), eligibility
+  /// falls back unchanged to [ageBasedProductVariants].
+  FunctionRegistry.register('getContinuedProductVariants', (args, stateData) {
+    final rawDoseCriteria = args.isNotEmpty ? args[0] : null;
+    final rawTasks = args.length > 1 ? args[1] : null;
+    final currentRunningCycle =
+        args.length > 2 ? int.tryParse(args[2]?.toString() ?? '') : null;
+    final ageBasedProductVariants =
+        args.length > 3 && args[3] is List ? args[3] as List : const [];
+
+    final lastAdministeredTask =
+        _lastPreviousCycleAdministeredTask(rawTasks, currentRunningCycle);
+    if (lastAdministeredTask == null) return ageBasedProductVariants;
+
+    final previousProductVariantId =
+        _deliveredProductVariantId(lastAdministeredTask);
+    if (previousProductVariantId == null) return ageBasedProductVariants;
+
+    final doseCriteria = rawDoseCriteria is List ? rawDoseCriteria : const [];
+    for (final rawCriteria in doseCriteria) {
+      final criteria = _asTaskMap(rawCriteria);
+      if (criteria == null) continue;
+      final variants = criteria['ProductVariants'] ?? criteria['productVariants'];
+      if (variants is! List) continue;
+
+      final matchesPreviousVariant = variants.any((variant) {
+        final variantMap = _asTaskMap(variant);
+        return variantMap?['productVariantId']?.toString() ==
+            previousProductVariantId;
+      });
+
+      if (matchesPreviousVariant) return [criteria];
+    }
+
+    // Previous product variant is no longer offered this cycle: fall back
+    // to the standard age-based eligibility.
+    return ageBasedProductVariants;
+  });
+
+  /// Registers a function that looks up the product variant (e.g.
+  /// SPAQ1/SPAQ2) a beneficiary was successfully administered in a cycle
+  /// strictly before [currentRunningCycle].
+  ///
+  /// - **Function Name**: `'getPreviousCycleProductVariantId'`
+  /// - **Arguments**: `[tasks, currentRunningCycle]`
+  /// - **Returns**: The `productVariantId` `String` that was delivered, or
+  ///   `''` if the beneficiary has no prior successful delivery.
+  ///
+  /// Used by navigation flows (e.g. the household-overview `DELIVERY`
+  /// button) that don't go through the wrapperConfig/`computedList`
+  /// pipeline that backs `getContinuedProductVariants`, so they can still
+  /// carry the "same medicine as last cycle" decision forward as a plain
+  /// navigation parameter.
+  FunctionRegistry.register('getPreviousCycleProductVariantId',
+      (args, stateData) {
+    final rawTasks = args.isNotEmpty ? args[0] : null;
+    final currentRunningCycle =
+        args.length > 1 ? int.tryParse(args[1]?.toString() ?? '') : null;
+
+    final lastAdministeredTask =
+        _lastPreviousCycleAdministeredTask(rawTasks, currentRunningCycle);
+    if (lastAdministeredTask == null) return '';
+
+    return _deliveredProductVariantId(lastAdministeredTask) ?? '';
   });
 
   FunctionRegistry.register("getInEligibleStatus", (args, stateData) {

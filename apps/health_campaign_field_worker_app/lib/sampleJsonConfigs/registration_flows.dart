@@ -672,7 +672,7 @@ final dynamic sampleFlows = {
               "operator": "equals"
             }
           },
-          "eligibleProductVariants": {
+          "ageBasedProductVariants": {
             "from": "{{currentDelivery.0.doseCriteria}}",
             "order": 5,
             "fallback": [],
@@ -684,6 +684,11 @@ final dynamic sampleFlows = {
                 "age": {"type": "ageInMonths", "source": "dateOfBirth"}
               }
             }
+          },
+          "eligibleProductVariants": {
+            "order": 7,
+            "from":
+                "{{fn:getContinuedProductVariants(currentDelivery.0.doseCriteria, tasks, currentRunningCycle, ageBasedProductVariants)}}"
           }
         },
         "searchConfig": {
@@ -1240,7 +1245,12 @@ final dynamic sampleFlows = {
                               "value": "{{fn:getCurrentCycleIndex()}}"
                             },
                             {"key": "doseIndex", "value": "1"},
-                            {"key": "deliveryStrategy", "value": "DIRECT"}
+                            {"key": "deliveryStrategy", "value": "DIRECT"},
+                            {
+                              "key": "continuedProductVariantId",
+                              "value":
+                                  "{{fn:getPreviousCycleProductVariantId(item.task, contextData.0.currentRunningCycle)}}"
+                            }
                           ],
                           "name": "DELIVERY",
                           "type": "FORM"

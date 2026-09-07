@@ -1,8 +1,11 @@
 import 'dart:async';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:device_info_plus/device_info_plus.dart';
+import 'package:digit_data_model/data/repositories/package_repository/remote/unique_id_pool.dart';
 import 'package:digit_data_model/data_model.dart';
 import 'package:digit_data_model/models/entities/hf_referral.dart';
+import 'package:digit_data_model/models/entities/id_status.dart';
 import 'package:digit_forms_engine/blocs/forms/forms.dart';
 import 'package:digit_showcase/showcase_widget.dart';
 import 'package:digit_ui_components/digit_components.dart';
@@ -74,6 +77,113 @@ class _AuthenticatedPageWrapperState extends State<AuthenticatedPageWrapper> {
     super.initState();
     _connectivitySubscription =
         Connectivity().onConnectivityChanged.listen(_handleConnectivityChange);
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (context.mounted) {
+        _silentDownsyncUniqueIds(context);
+      }
+    });
+  }
+
+  Future<void> _silentDownsyncUniqueIds(BuildContext context) async {
+    try {
+      final connectivityResult = await Connectivity().checkConnectivity();
+      if (!context.mounted) return;
+      if (connectivityResult.contains(ConnectivityResult.none)) return;
+
+      final userUuid = context.loggedInUserUuid;
+      final repository = context
+          .read<LocalRepository<UniqueIdPoolModel, UniqueIdPoolSearchModel>>();
+
+      final searchResult = await repository.search(UniqueIdPoolSearchModel(
+        status: IdStatus.unAssigned.toValue(),
+        userUuid: userUuid,
+      ));
+      if (!context.mounted) return;
+
+      final localCount = searchResult.length;
+      final limit = DigitDataModelSingleton().uniqueBeneficiaryIdLimit ??
+          Constants.fallbackUniqueBeneficiaryIdLimit;
+
+      if (localCount == 0) {
+        final needed = limit - localCount;
+        final remoteRepository = context.read<UniqueIdPoolRemoteRepository>();
+        final tenantId = envConfig.variables.tenantId;
+        final deviceInfo = DeviceInfoPlugin();
+        final androidInfo = await deviceInfo.androidInfo;
+        final deviceUuid = androidInfo.id;
+
+        int offset = 0;
+        int totalFetched = 0;
+        final batchSize = needed < 100 ? needed : 100;
+
+        while (totalFetched < needed) {
+          final currentBatchSize = (needed - totalFetched) < batchSize
+              ? (needed - totalFetched)
+              : batchSize;
+
+          final searchModel = UniqueIdPoolSearchModel(
+            deviceInfo: androidInfo.toString(),
+            userUuid: userUuid,
+            deviceUuid: deviceUuid,
+            tenantId: tenantId,
+            count: currentBatchSize,
+            fetchAllocatedIds: false,
+          );
+
+          if (!context.mounted) return;
+          final response = await _fetchUniqueIdBatchWithRetry(
+            remoteRepository,
+            searchModel,
+            limit: currentBatchSize,
+            offSet: offset,
+          );
+          if (response == null) break;
+
+          final List<UniqueIdPoolModel> batch = response.models;
+          if (batch.isEmpty) {
+            break;
+          }
+
+          if (!context.mounted) return;
+          await repository.bulkCreate(batch);
+          totalFetched += batch.length;
+          offset += batch.length;
+
+          if (batch.length < currentBatchSize) {
+            break;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Silent beneficiary ID downsync after login failed: $e');
+    }
+  }
+
+  /// Retries the unique ID pool fetch up to [maxAttempts] times so a single
+  /// transient network failure doesn't abort the whole downsync.
+  Future<UniqueIdSearchResponse?> _fetchUniqueIdBatchWithRetry(
+    UniqueIdPoolRemoteRepository remoteRepository,
+    UniqueIdPoolSearchModel searchModel, {
+    required int limit,
+    required int offSet,
+    int maxAttempts = 3,
+  }) async {
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await remoteRepository.searchWithMetadata(
+          searchModel,
+          limit: limit,
+          offSet: offSet,
+        );
+      } catch (e) {
+        debugPrint(
+          'Unique ID pool fetch attempt $attempt/$maxAttempts failed: $e',
+        );
+        if (attempt == maxAttempts) return null;
+      }
+    }
+    return null;
   }
 
   @override

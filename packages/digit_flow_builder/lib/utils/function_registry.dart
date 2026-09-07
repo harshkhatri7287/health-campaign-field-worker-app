@@ -1048,7 +1048,7 @@ void initializeFunctionRegistry() {
           },
           orElse: () => <String, dynamic>{},
         );
-
+        
         if (lastAdministeredTask.isEmpty) return true;
 
         final af = lastAdministeredTask['additionalFields'];

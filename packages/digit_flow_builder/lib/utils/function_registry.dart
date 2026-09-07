@@ -267,6 +267,23 @@ bool _isAgeEligibleFromDoseCriteria(
   return false;
 }
 
+/// Checks whether a beneficiary's `ProjectBeneficiaryModel.additionalFields`
+/// carries a non-empty value for [key].
+///
+/// Used to check the `administeredProductVariantId` flag set once a
+/// beneficiary is first successfully administered, so continuing
+/// beneficiaries stay eligible regardless of their current age.
+bool _hasNonEmptyAdditionalField(dynamic rawFields, String key) {
+  if (rawFields is! List) return false;
+  for (final field in rawFields) {
+    if (field is Map && field['key'] == key) {
+      final value = field['value']?.toString() ?? '';
+      return value.isNotEmpty;
+    }
+  }
+  return false;
+}
+
 // Helper function matching hasLogWithType logic
 bool _hasLogWithType(attendanceLog, DateTime date, String type) {
   final logTime = type == 'ENTRY'
@@ -450,6 +467,19 @@ void initializeFunctionRegistry() {
     }
 
     final tasks = args.length > 1 ? args[1] : [];
+    // Get currentRunningCycle from third argument if provided
+    final currentRunningCycle =
+        args.length > 2 ? int.tryParse(args[2]?.toString() ?? '') : null;
+    // Fourth argument: the beneficiary's own ProjectBeneficiaryModel
+    // additionalFields.fields list.
+    final projectBeneficiaryAdditionalFields =
+        args.length > 3 ? args[3] : null;
+    // A beneficiary already administered in a past cycle stays eligible this
+    // cycle regardless of their current age, so they keep receiving the same
+    // product variant (see the `continuedProductVariantId` nav param, which
+    // reads the same `administeredProductVariantId` flag).
+    final hasPreviousCycleAdministration = _hasNonEmptyAdditionalField(
+        projectBeneficiaryAdditionalFields, 'administeredProductVariantId');
     final dobValue = args.first;
     if (dobValue == null) {
       print(
@@ -482,7 +512,7 @@ void initializeFunctionRegistry() {
     final sideEffects = (stateData.modelMap['sideEffects'] as List?) ?? [];
 
 // --- Check age eligibility ---
-    final isWithinAge =
+    final isWithinAge = hasPreviousCycleAdministration ||
         _isAgeEligibleFromDoseCriteria(currentCycle, totalAgeMonths);
 
     if (!isWithinAge) return false;
@@ -491,10 +521,6 @@ void initializeFunctionRegistry() {
     bool recordedSideEffect = false;
 
     if (tasks.isNotEmpty) {
-      // Get currentRunningCycle from third argument if provided
-      final currentRunningCycle =
-          args.length > 2 ? int.tryParse(args[2]?.toString() ?? '') : null;
-
       for (final item in tasks) {
         Map<String, dynamic> task;
 

@@ -245,7 +245,30 @@ class _HomePageState extends LocalizedState<HomePage> {
         final firstDelivery = currentCycle?.deliveries?.firstOrNull;
         final matchingCriteria = <Map<String, dynamic>>[];
 
-        if (firstDelivery?.doseCriteria != null && age != null) {
+        // If this beneficiary was already administered in a past cycle,
+        // keep giving them the same product variant (e.g. SPAQ1/SPAQ2)
+        // regardless of the age band they currently fall into.
+        final continuedProductVariantId =
+            navParams?['continuedProductVariantId']?.toString();
+        if (firstDelivery?.doseCriteria != null &&
+            continuedProductVariantId != null &&
+            continuedProductVariantId.isNotEmpty) {
+          for (final dc in firstDelivery!.doseCriteria!) {
+            final hasContinuedVariant = (dc.productVariants ?? []).any(
+                (pv) => pv.productVariantId == continuedProductVariantId);
+            if (hasContinuedVariant) {
+              matchingCriteria.add(dc.toMap());
+              break;
+            }
+          }
+        }
+
+        // Otherwise (never administered before, or the previous product
+        // variant is no longer offered this cycle), fall back to the
+        // standard age-based eligibility.
+        if (matchingCriteria.isEmpty &&
+            firstDelivery?.doseCriteria != null &&
+            age != null) {
           for (final dc in firstDelivery!.doseCriteria!) {
             if (dc.condition != null && dc.condition!.isNotEmpty) {
               // Evaluate condition e.g. "3<=ageandage<=11"
